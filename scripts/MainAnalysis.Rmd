@@ -1,0 +1,529 @@
+---
+title: "Project 2 RNAseq Report"
+author: "Addison Yam"
+date: October 24, 2024
+output: html_document
+---
+Welcome to Addison Yam's BF528 Genomic Data Analysis: Project 2 RNAseq Report! 
+
+The audience will be brought on a journey through a week by week learning synopsis. While predictable elements may bore the readers, this is a special report only available to a select few that's been waiting for a valorous patron and reader.
+
+```{r Load Important Libraries}
+library(edgeR)
+library(DESeq2)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(ggrepel)
+library(forcats)
+```
+### Introduction (1 paragraph)
+Type 1 Diabetes (T1D) is a disease where the body's immune system attacks and destroys the insulin-making beta-cells in the pancreas. People who develop T1D often have changes in a specific gene called Tyrosine Kinase 2 (TYK2), which controls inflammation and the body's response to stress signals like interferon-alpha (IFN-alpha). Since it was unclear exactly how TYK2 causes problems for beta-cells, this study was performed to find its exact job in two areas: first, whether it helps beta-cells develop properly, and second, how it changes their reaction to the harmful IFN-alpha signal. To gain a complete picture of these changes, the authors used advanced computer analysis (bioinformatics). This included looking for which genes turned on or off (Differential Expression) and grouping those genes into major biological activities (pathway analysis like Reactome). These methods allowed them to see the full set of processes TYK2 controls, such as how cells build structure (Extracellular matrix organization) and how they communicate (Signaling by Receptor Tyrosine Kinases).
+
+### Methods (as long as needed)
+RNA-seq was performed on six samples, with three biological replicates per condition (control and experimental). Sequencing quality was assessed using FastQC v0.12.1 (on default parameters), and results were aggregated across samples using MultiQC v1.25 (on default parameters). Paired-end reads were aligned to the human reference genome (GRCh38) using STAR v2.7.11b (on default parameters), generating BAM files for each sample. Gene-level counts were quantified from aligned reads using VERSE v0.1.5 (on default parameters), counting reads mapping to exons. Ensembl gene IDs were converted to gene symbols using a custom Python script with pandas v2.3.3 (on default parameters), and individual count files were concatenated into a single gene-by-sample matrix for downstream analysis.
+
+Normalization and quality control were performed using DESeq2 v1.50.0. Counts were variance-stabilized to generate normalized expression values, which were used to perform principal component analysis (PCA) and compute sample-to-sample distances, allowing evaluation of sample clustering and experimental consistency. Differential expression analysis was conducted in DESeq2 using Wald tests, applying an adjusted p-value cutoff of 0.05, with significant genes further filtered using |log2 fold-change| ≥ 1 to classify up- and down-regulated genes.
+
+Significant genes were annotated with gene symbols and subjected to pathway enrichment analysis using DAVID v2025_1, ENRICHR v3.4, and FGSEA v1.35.8, with ranking based on log2 fold-change. Top enriched pathways were identified for both up- and down-regulated genes, and results were compared to those reported in the original publication. All analyses were performed with default parameters unless otherwise specified.
+
+### Quality Control Evaluation (1-2 paragraphs)
+Through the MultiQC report, a set of statistics about the quality of the data measured and analyzed was gathered. (1) The range of the number of reads in all of the samples is 34.4M (84.5M, 118.9M) through the STAR Summary Statistics. The lowest total reads of 84.5M is from control_rep_2 and the highest total reads of 118.9M is from control_rep3. (2) To investigate whether there were potential issues with the reads as flagged by FASTQC, I looked at the Per Base Sequence Content where six of the samples had warnings (all second replicates) and six failed (all first replicates), indicating suspicion. This could be due to random hexamer bias/error made during RNAseq's library prep and to overcome it, trimming of biased regions from the beginning of reads could be performed. Otherwise, the Per Base Sequence Quality and Per Sequence Quality Scores didn't raise suspicion. (3) There seemed to be no adaptor contamination where all the samples passed. For overrepresented sequences, there wasn't anything too suspicious, six of the samples passed and the other six had warnings, and with closer inspection of the occurrences and percent of the reads, nothing was alarming/stark. (4) The alignment rate of the reads to the reference genome were all near and above ~92% Uniquely Mapped Reads which is ideal and with consistent percentages, this means there's a strong match to the reference genome. (5) I believe the experiment was of high quality and is suitable fow downstream analysis based on all of the statistics about the quality of the read data. Although there seemed to be suspicious Per Base Sequence Content with all the samples, every other metric proved to be positive in favor of high quality experiment, trimming could be done to remove random hexamer bias.
+
+### Filtering the counts matrix
+The method chosen to filter this particularly interesting counts matrix 'final_counts.tsv' was Count-Per-Million (CPM). The CPM strategy normalizes (or reduces redundancy in) gene expression data through adjustment and scaling of myriad raw read counts. The purpose is to account for differing depths of read samples, allowing for more 'fair' comparisons between the relative expression of genes in an experiment.
+
+With the CPM method, I determined the filter threshold as keeping genes where the CPM score is greater than or equal to 1 in at least three samples of that gene. Before applying the filter, there were 63,241 genes. Filtering removed 50,044 genes. After filtering, there were 13,197 genes, representing 20.87 % of the original genes. My figure with the title 'Effect of Filtering on log2(CPM+1)' illustrating two plots is to show the density of unfiltered (all genes before filter) and filtered (retained genes) data based on their CPM score so how 'active' or 'impactful' the gene is. The larger count of and more of this gene, the more 'active' the gene is. The figure tells us that majority of the genes has zero or close to zero expression counts across the samples (in the first plot) and we removed a lot of noise (genes that had no impact) so now the retained genes (in the second plot) are statistically more likely to be transcribed and are active.
+
+```{r Load Count Matrix and Match Gene Names}
+raw_counts <- read.delim(
+  "results/final_counts.tsv", 
+  header = TRUE, 
+  stringsAsFactors = FALSE
+)
+
+# Remove the dummy row where Gene_ID == "gene"
+raw_counts <- raw_counts[raw_counts$Gene_ID != "gene", ]
+
+# Remove version numbers from Ensembl IDs
+raw_counts$Gene_ID <- sub("\\..*$", "", raw_counts$Gene_ID)
+
+# Set rownames to Gene_ID and remove column
+rownames(raw_counts) <- raw_counts$Gene_ID
+raw_counts$Gene_ID <- NULL
+
+# Convert all remaining columns to numeric
+raw_counts[] <- lapply(raw_counts, as.numeric)
+
+# Reorder columns: controls first, experiments second
+control_cols <- grep("^control", colnames(raw_counts), value = TRUE)
+exp_cols <- grep("^exp", colnames(raw_counts), value = TRUE)
+raw_counts <- raw_counts[, c(control_cols, exp_cols)]
+
+# Match the geneID to gene name
+gene_map <- read_tsv("results/gene_map/geneIDs.txt", col_names = c("Gene_ID", "Gene_Name"))
+# Remove version numbers from gene_map IDs to match count matrix
+gene_map$Gene_ID <- sub("\\..*$", "", gene_map$Gene_ID)
+```
+
+```{r Filter lowly expressed genes}
+cpm_matrix <- cpm(as.matrix(raw_counts))
+keep <- rowSums(cpm_matrix >= 1) >= 3
+filtered_counts <- raw_counts[keep, ]
+cat("Number of genes retained after filtering:", nrow(filtered_counts), "\n")
+```
+
+```{r Visualize effect of filtering}
+logCPM_unfiltered <- log2(rowMeans(cpm_matrix) + 1)
+logCPM_filtered <- log2(rowMeans(cpm_matrix[keep, ]) + 1)
+plot_data <- data.frame(
+  LogCPM = c(logCPM_unfiltered, logCPM_filtered),
+  Dataset = factor(c(rep("Unfiltered", length(logCPM_unfiltered)),
+                     rep("Filtered", length(logCPM_filtered))))
+)
+ggplot(plot_data, aes(x=LogCPM, fill=Dataset)) +
+  geom_histogram(alpha=0.6, position="identity", bins=50) +
+  facet_wrap(~Dataset, ncol=1) +
+  theme_minimal() +
+  labs(title="Effect of Filtering on log2(CPM+1)", x="log2(CPM+1)", y="Number of genes")
+```
+
+### Differential Expression Analysis
+
+Differential expression analysis was performed using DESeq2 on the VST-normalized counts of filtered genes. Using an adjusted p-value cutoff of 0.05, a total of 1,116 significant genes were identified. Applying an additional fold-change threshold of |log2FC| ≥ 1 for directionality, 48 genes were classified as upregulated and 100 as downregulated in TYK2 KO versus WT. This subset represents the most robust changes in gene expression attributable to TYK2 deficiency under basal or stimulated conditions.
+
+The results were visualized in a volcano plot highlighting genes by significance and fold-change direction. Genes such as KRAS, LAMB2, SPP1, and COL2A1 were specifically labeled to indicate notable changes, illustrating both biologically relevant candidates and transcriptional pathways potentially influenced by TYK2. Most genes, however, exhibited modest fold changes, indicating that while TYK2 impacts gene expression, the overall transcriptional landscape is moderately affected.
+
+To further explore the biological implications of these changes, up- and downregulated genes were separately extracted and used for pathway enrichment analyses with DAVID, Enrichr, and FGSEA. Lists of significant genes were exported for each direction, ensuring that downstream analyses could distinguish between up- and downregulated processes. This step also allows for direct comparison with pathways reported in the original study.
+
+Overall, the DE analysis confirms a coherent transcriptional response to TYK2 deletion, capturing both individual gene effects and sets of functionally related genes that are potentially key to beta-cell function and stress response. The number of significant genes and the fold-change distribution are consistent with expectations for high-quality RNA-seq data with sufficient replication.
+
+```{r Prepare DESeq2}
+condition <- factor(c(rep("control", length(control_cols)),
+                      rep("experimental", length(exp_cols))))
+coldata <- data.frame(row.names = colnames(filtered_counts),
+                      condition = condition)
+
+dds <- DESeqDataSetFromMatrix(countData = filtered_counts,
+                              colData = coldata,
+                              design = ~condition)
+```
+
+```{r Run DEseq2 and extract results}
+dds <- DESeq(dds)
+res <- results(dds)
+res <- res[order(res$padj), ]
+```
+
+```{r Summary & top genes}
+top10 <- head(res, 10)
+top10_df <- as.data.frame(top10)
+top10_df$Gene_ID <- rownames(top10_df)
+
+top10_df <- left_join(top10_df, gene_map, by = "Gene_ID")
+top10_df <- top10_df %>% select(Gene_ID, Gene_Name, everything())
+
+print(top10_df)
+```
+
+```{r Extract significant genes}
+padj_cutoff <- 0.05
+log2fc_cutoff <- 1  # adjust threshold if needed (e.g., 0.58 for ~1.5x change)
+
+# Convert DESeq2 results to dataframe
+res_df <- as.data.frame(res)
+res_df$Gene_ID <- rownames(res_df)
+
+# Add gene names (after matching Ensembl IDs)
+sig_genes <- left_join(res_df, gene_map, by = "Gene_ID")
+
+# Identify significant genes
+sig_genes <- sig_genes %>%
+  filter(!is.na(padj) & padj < padj_cutoff)
+
+# Label direction of change
+sig_genes <- sig_genes %>%
+  mutate(direction = case_when(
+    log2FoldChange >= log2fc_cutoff ~ "Upregulated",
+    log2FoldChange <= -log2fc_cutoff ~ "Downregulated",
+    TRUE ~ "NotSignificant"
+  ))
+
+# Subsets
+up_genes <- sig_genes %>% filter(direction == "Upregulated")
+down_genes <- sig_genes %>% filter(direction == "Downregulated")
+
+# Export full and separate DAVID input lists
+write.table(sig_genes$Gene_Name,
+            "results/significant_genenames_for_DAVID_all.txt",
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+write.table(up_genes$Gene_Name,
+            "results/significant_genenames_for_DAVID_up.txt",
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+write.table(down_genes$Gene_Name,
+            "results/significant_genenames_for_DAVID_down.txt",
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# Summary
+cat("Total significant genes (padj <", padj_cutoff, "):", nrow(sig_genes), "\n")
+cat("Upregulated:", nrow(up_genes), " | Downregulated:", nrow(down_genes), "\n")
+cat("DAVID input files saved:\n",
+    "  results/significant_genenames_for_DAVID_all.txt\n",
+    "  results/significant_genenames_for_DAVID_up.txt\n",
+    "  results/significant_genenames_for_DAVID_down.txt\n")
+```
+
+```{r FGSEA Analysis}
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(forcats)
+
+# --- 1) Ensure res_df exists and has Gene_ID column (from DESeq2 results) ---
+# res_df should be a data.frame with at least: Gene_ID, log2FoldChange, padj
+# gene_map should be a data.frame with columns: Gene_ID, Gene_Name (or similar)
+
+# Add gene symbols (Gene_Name) to res_df by matching trimmed Ensembl IDs
+res_df <- res_df %>%
+  mutate(Gene_ID_trim = sub("\\.\\d+$", "", Gene_ID)) 
+
+# adapt gene_map column names if different; assume gene_map has Gene_ID and Gene_Name
+gene_map <- gene_map %>% mutate(Gene_ID_trim = sub("\\.\\d+$", "", Gene_ID))
+
+res_df <- res_df %>%
+  left_join(gene_map %>% select(Gene_ID_trim, Gene_Name), by = "Gene_ID_trim")
+
+# Check we successfully added gene names
+if (!"Gene_Name" %in% colnames(res_df)) stop("Gene_Name not found in res_df after join. Check gene_map column names.")
+
+# --- 2) Prepare ranked vector (use all genes, do NOT filter by significance) ---
+ranks_tbl <- res_df %>%
+  filter(!is.na(log2FoldChange)) %>%
+  # remove entries missing Gene_Name
+  filter(!is.na(Gene_Name)) %>%
+  # If duplicate gene symbols, keep the one with largest absolute log2FC
+  group_by(Gene_Name) %>%
+  slice_max(order_by = abs(log2FoldChange), n = 1) %>%
+  ungroup() %>%
+  arrange(desc(log2FoldChange))
+
+ranks_vector <- ranks_tbl$log2FoldChange
+names(ranks_vector) <- ranks_tbl$Gene_Name
+
+cat("Number of genes ranked:", length(ranks_vector), "\n")
+
+# --- 3) Load gene sets from GMT (C2 canonical MSigDB file) ---
+gmt_path <- "c2.cp.v2025.1.Hs.symbols.gmt"
+if (!file.exists(gmt_path)) stop("GMT file not found at: ", gmt_path)
+pathways <- gmtPathways(gmt_path)
+cat("Number of gene sets loaded:", length(pathways), "\n")
+
+# --- 4) Run FGSEA (use multilevel; do not pass nperm) ---
+set.seed(42)
+fgsea_res <- fgseaMultilevel(pathways = pathways,
+                            stats = ranks_vector,
+                            minSize = 15,
+                            maxSize = 500)
+
+# tidy results and save
+fgsea_res_df <- as.data.frame(fgsea_res) %>%
+  arrange(padj)
+
+write_tsv(fgsea_res_df, "results/FGSEA_C2_results.tsv")
+cat("FGSEA results written to results/FGSEA_C2_results.tsv\n")
+
+# --- 5) Choose top pathways to plot ---
+padj_cutoff <- 0.05
+top_n <- 10
+
+sig_pathways <- fgsea_res_df %>% filter(!is.na(padj) & padj < padj_cutoff) %>% arrange(padj)
+
+if (nrow(sig_pathways) == 0) {
+  message("No pathways with padj <", padj_cutoff, "found. Plotting top ", top_n, " pathways by |NES| instead.")
+  plot_df <- fgsea_res_df %>% arrange(desc(abs(NES))) %>% head(top_n)
+} else {
+  plot_df <- sig_pathways %>% head(top_n)
+}
+
+# Ensure factor ordering for plotting
+plot_df <- plot_df %>%
+  mutate(pathway = fct_reorder(pathway, NES))
+
+# --- 6) Barplot of NES (colored by direction) ---
+plt <- ggplot(plot_df, aes(x = pathway, y = NES, fill = NES > 0)) +
+  geom_col(color = "black", width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#F08080", "FALSE" = "#5DADE2"), 
+                    labels = c("Down (NES < 0)", "Up (NES > 0)"),
+                    name = "Enrichment direction") +
+  theme_minimal(base_size = 13) +
+  labs(title = "FGSEA (C2) — Top Enriched Pathways",
+       subtitle = paste0("Ranked by log2FC; plotting ", nrow(plot_df), " pathways"),
+       x = "", y = "Normalized Enrichment Score (NES)") +
+  theme(legend.position = "top",
+        plot.title = element_text(face = "bold", hjust = 0.5))
+
+print(plt)
+ggsave("results/Figure_FGSEA_TopPathways.png", plot = plt, width = 15, height = 6, dpi = 300)
+cat("Saved barplot to results/Figure_FGSEA_TopPathways.png\n")
+
+# --- 7) Also produce enrichment curve for the single top pathway (most significant or top by |NES|) ---
+if (nrow(plot_df) > 0) {
+  top_pathway_name <- plot_df$pathway[1]
+  top_pathway_genes <- pathways[[top_pathway_name]]
+  # plotEnrichment expects a pathway vector and the named stats vector
+  enrich_plot <- plotEnrichment(top_pathway_genes, ranks_vector) +
+    labs(title = paste0("Enrichment plot: ", top_pathway_name),
+         x = "Rank",
+         y = "Enrichment Score") +
+    theme_minimal(base_size = 12)
+  print(enrich_plot)
+  ggsave("results/Figure_FGSEA_TopPathway_Enrichment.png", plot = enrich_plot, width = 8, height = 4.5, dpi = 300)
+  cat("Saved enrichment curve to results/Figure_FGSEA_TopPathway_Enrichment.png\n")
+} else {
+  message("No pathway available for enrichment curve plotting.")
+}
+```
+
+### RNAseq Quality Control
+
+Normalization using the variance-stabilizing transformation (VST) revealed strong separation of samples by experimental condition in principal component analysis (PCA). PC1 accounted for 84% of the variance and clearly distinguished WT and TYK2 KO samples, while PC2 explained 12% of variance. The tight clustering of biological replicates along both axes indicates minimal technical noise, good reproducibility, and reliable sequencing depth across all samples. This PCA result suggests that the major driver of variation in the dataset is the experimental condition itself.
+
+A complementary sample-to-sample distance matrix was computed using the VST-normalized counts and visualized as a heatmap. Replicates clustered tightly together, confirming the consistency of the experiment, and the distance between WT and TYK2 KO samples was substantial, reflecting biologically meaningful differences in expression profiles. Together, the PCA and sample distance analyses confirm that the RNA-seq data are suitable for downstream differential expression and pathway enrichment analyses, and that batch effects or technical artifacts are minimal.
+
+```{r RNAseq Quality Control}
+library(pheatmap)
+library(RColorBrewer)
+library(grid)
+
+# === 1️⃣ Normalize counts using variance stabilizing transformation (vst) ===
+vsd <- vst(dds, blind = FALSE)  # preserves experimental design
+normalized_counts <- assay(vsd)
+
+# === 2️⃣ PCA Plot ===
+pca_data <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
+percent_var <- round(100 * attr(pca_data, "percentVar"))
+
+pca_plot <- ggplot(pca_data, aes(PC1, PC2, color = condition)) +
+  geom_point(size = 4, alpha = 0.8) +
+  xlab(paste0("PC1: ", percent_var[1], "% variance")) +
+  ylab(paste0("PC2: ", percent_var[2], "% variance")) +
+  ggtitle("PCA of RNAseq Samples (VST-normalized)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  scale_color_manual(values = c("#5DADE2", "#F08080"))
+
+# Save PCA plot
+ggsave("results/Figure_PCA_QC.png", plot = pca_plot, width = 7, height = 6, dpi = 300)
+# Display PCA plot
+print(pca_plot)
+
+# === 3️⃣ Sample-to-Sample Distance Heatmap ===
+sample_dist <- dist(t(normalized_counts))
+sample_dist_matrix <- as.matrix(sample_dist)
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+# Create pheatmap object (silent = TRUE prevents immediate plotting)
+heatmap_plot <- pheatmap(
+  sample_dist_matrix,
+  clustering_distance_rows = sample_dist,
+  clustering_distance_cols = sample_dist,
+  col = colors,
+  main = "Sample-to-Sample Distances (VST-normalized)",
+  fontsize = 10,
+  silent = TRUE
+)
+
+# Save heatmap to its own PNG device
+png("results/Figure_SampleDistanceHeatmap_QC.png", width = 800, height = 700)
+grid::grid.draw(heatmap_plot$gtable)
+dev.off()
+
+# Display heatmap independently in notebook
+grid.newpage()  # ensures a fresh plotting page
+grid::grid.draw(heatmap_plot$gtable)
+```
+
+### Replicate figure 3C and 3F
+The volcano plot replicating Figure 3C illustrates the distribution of gene expression changes in TYK2 KO versus WT samples. Using |log2FC| ≥ 1 and padj < 0.05 as thresholds, 48 upregulated and 100 downregulated genes were labeled, with notable candidates such as KRAS, LAMB2, and SPP1 highlighted. The plot shows that while most genes exhibit modest fold changes, a subset of genes demonstrates strong regulation, providing targets for further functional investigation.
+
+Pathway enrichment analysis, performed with FGSEA and Reactome, revealed biologically coherent pathways corresponding to up- and downregulated gene sets. The top upregulated pathways from FGSEA included PID_P53_DOWNSTREAM_PATHWAY, REACTOME_ASSEMBLY_OF_COLLAGEN_FIBRILS_AND_OTHER_MULTIMERIC_STRUCTURES, REACTOME_MET_PROMOTES_CELL_MOTILITY, and PID_AV83_INTEGRIN1_PATHWAY, whereas top downregulated pathways were WP_ADHD_AND_AUTISM_ASD_PATHWAYS, REACTOME_NEURONAL_SYSTEM, and WP_CELL_LINEAGE_MAP_FOR_NEURONAL_DIFFERENTIATION. Enrichr results highlighted Extracellular Matrix Organization, Neuronal System, Regulation of IGF Transport and Uptake by IGFBPs, Post-translational Protein Phosphorylation, and TP53-mediated transcription of cell death genes.
+
+The barplot replicating Figure 3F visualizes these pathways ranked by combined score, with bars colored according to adjusted p-value and separated by direction of regulation. Up- and downregulated pathways are clearly distinguished, reflecting the biological impact of TYK2 deletion. Comparison with the original study shows similar biological processes affected, although the exact pathways differ, likely due to experimental and methodological differences. These results provide an integrated view of TYK2-dependent transcriptional changes, both at the gene level and at the level of broader functional processes.
+
+Together, the volcano plot and pathway enrichment figures demonstrate that TYK2 influences both the magnitude and direction of gene expression changes and highlight key functional pathways that may be relevant for beta-cell development and response to IFN-alpha.
+
+```{r Volcano plot for S5 WT vs TYK2 KO - Figure 3C}
+# Volcano plot parameters
+log2fc_cutoff <- 1
+padj_cutoff <- 0.05
+
+# Prepare dataframe
+volcano_df <- as.data.frame(res)
+volcano_df$Gene_ID <- rownames(volcano_df)
+
+# Merge with gene names
+volcano_df <- left_join(volcano_df, gene_map, by = "Gene_ID")
+
+# Define regulation category
+volcano_df <- volcano_df %>%
+  mutate(regulation = case_when(
+    log2FoldChange >= log2fc_cutoff & padj < padj_cutoff ~ "Upregulated",
+    log2FoldChange <= -log2fc_cutoff & padj < padj_cutoff ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+
+# Define color palette
+volcano_colors <- c("Upregulated" = "#F08080",   # soft red
+                    "Downregulated" = "#5DADE2", # iris blue
+                    "Not Significant" = "gray80")
+
+# Genes to label (customize as needed)
+genes_to_label <- c("KRAS", "LAMB2", "SPP1", "COL2A1", "BAX",
+                    "DUSP6", "COL9A2", "PGF", "NTRK2", "INSM1",
+                    "NKX2-2", "PAK3", "NEUROG3")
+
+# Build volcano plot
+ggplot(volcano_df, aes(x = log2FoldChange, y = -log10(padj), color = regulation)) +
+  geom_point(alpha = 0.8, size = 1.5) +
+  scale_color_manual(values = volcano_colors) +
+  geom_vline(xintercept = c(-log2fc_cutoff, log2fc_cutoff), linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed", color = "gray50") +
+  geom_text_repel(
+    data = subset(volcano_df, Gene_Name %in% genes_to_label),
+    aes(label = Gene_Name),
+    size = 3.5, max.overlaps = Inf, box.padding = 0.4, point.padding = 0.2
+  ) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Differential Expression: S5 WT vs TYK2 KO",
+       x = "Expression Difference(log2(Fold Change))",
+       y = expression(-log[10](adjusted~p~value)),
+       color = "Regulation") +
+  theme(legend.position = "top",
+        plot.title = element_text(face = "bold", hjust = 0.5))
+
+# Save the volcano plot
+ggsave("results/Figure_c_Volcano_S5_TYK2KO_vs_WT.png", width = 8, height = 6, dpi = 300)
+```
+
+```{r Reactome Enrichment Plot - Figure 3F}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(stringr)
+
+# 1️⃣ Load the Reactome results
+reactome <- read.delim("results/Reactome_Pathways_2024_table.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# 2️⃣ Clean up column names and sort by adjusted p-value
+reactome <- reactome %>%
+  mutate(Adjusted.P.value = as.numeric(Adjusted.P.value)) %>%
+  arrange(Adjusted.P.value)
+
+# Load significant gene lists
+up_genes <- readLines("results/significant_genenames_for_DAVID_up.txt")
+down_genes <- readLines("results/significant_genenames_for_DAVID_down.txt")
+
+# Function to check if a pathway is enriched in up or down genes
+assign_direction <- function(pathway_genes_string, up_genes, down_genes) {
+  pathway_genes <- unlist(str_split(pathway_genes_string, ";"))
+  up_overlap <- sum(pathway_genes %in% up_genes)
+  down_overlap <- sum(pathway_genes %in% down_genes)
+
+  if (up_overlap > down_overlap) {
+    return("Up-regulated")
+  } else if (down_overlap > up_overlap) {
+    return("Down-regulated")
+  } else {
+    return("Mixed/Undetermined")
+  }
+}
+
+# Apply the function to assign direction to each pathway
+reactome$Direction <- sapply(reactome$Genes, assign_direction, up_genes, down_genes)
+
+# Filter for top pathways 
+top_n_per_direction <- 7 
+
+# Get top pathways for Up-regulated and Down-regulated
+top_up_pathways <- reactome %>%
+  filter(Direction == "Up-regulated") %>%
+  slice(1:top_n_per_direction) %>%
+  mutate(Term = fct_reorder(Term, -log10(Adjusted.P.value)))
+
+top_down_pathways <- reactome %>%
+  filter(Direction == "Down-regulated") %>%
+  slice(1:top_n_per_direction) %>%
+  mutate(Term = fct_reorder(Term, -log10(Adjusted.P.value)))
+
+# Combine for the single plotting object
+all_top_pathways <- bind_rows(top_up_pathways, top_down_pathways) %>%
+  mutate(
+    Term = factor(Term, levels = unique(c(rev(levels(top_up_pathways$Term)), rev(levels(top_down_pathways$Term))))),
+    log_p_value = -log10(Adjusted.P.value)
+  )
+
+# --- Final Plot Generation (Uses Combined.Score for Bar Length) ---
+
+# Define color breaks and palettes
+min_p_val_plot <- 0.00001
+max_p_val_plot <- 0.05
+color_palette <- c("#FF0000", "#FF6666", "#FF9999", "#800080", "#0000FF") # Red to Purple to Blue
+color_values <- scales::rescale(c(min_p_val_plot, 0.01, 0.02, 0.03, max_p_val_plot))
+
+# This is the single ggplot object that generated your successful bars and legend
+final_plot_intact <- ggplot(all_top_pathways, aes(x = Term, y = Combined.Score, fill = Adjusted.P.value)) + 
+  geom_bar(stat = "identity", alpha = 0.9) +
+  coord_flip() +
+  scale_fill_gradientn(
+    colors = color_palette,
+    values = color_values,
+    limits = c(min(all_top_pathways$Adjusted.P.value), max(all_top_pathways$Adjusted.P.value)),
+    breaks = c(0.01, 0.02, 0.03, 0.04),
+    labels = c("0.01", "0.02", "0.03", "0.04"),
+    guide = guide_colorbar(
+        title = "Adjusted p value", 
+        reverse = TRUE,
+        barheight = unit(4, "cm"), 
+        title.position = "top", 
+        title.hjust = 0
+    )
+  ) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "S5: Reactome enrichment",
+    x = "",
+    # Use the requested x-axis label, even though it represents Combined Score data
+    y = "Percentage of DE genes in category / \n all genes in category (%)" 
+  ) +
+  theme(
+    # Centering the title and placing the legend on the left
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14, color = "#00BFC4"),
+    legend.position = "left",
+    plot.margin = margin(10, 10, 10, 150), # Adjust left margin for centering
+    # Aesthetics
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    axis.text.y = element_text(size = 10, colour = "black"), # Pathway Names
+    axis.text.x = element_text(size = 10, colour = "black"), # Combined Score values
+    axis.ticks.x = element_line(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_line(colour = "grey", linetype = "dotted"),
+    panel.grid.minor.x = element_blank()
+  )
+
+
+# Save the figure to results
+ggsave("results/Reactome_Enrichment_Figure_INTACT_FINAL.png", plot = final_plot_intact, width = 25, height = 9, dpi = 300)
+
+print(final_plot_intact)
+```
+
+```{r Session info}
+sessionInfo()
+```
