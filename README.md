@@ -38,8 +38,7 @@ This project reproduces the bioinformatic analysis from the publication "The typ
   │ └── Project2Report.html # HTML version
   │
   └── README.md
-
-
+```
 
 ## Key Findings
 
