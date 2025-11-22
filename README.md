@@ -6,6 +6,40 @@ This project reproduces the bioinformatic analysis from the publication "The typ
 
 ## Project Structure
 
+  
+  ```text
+  rnaseq-project/
+  │
+  |-- data/ # Input data files
+  │ ├── final_counts.tsv # Raw count matrix
+  │ └── geneIDs.txt # Gene ID to symbol mapping
+  │
+  ├── envs/ # Conda environment files
+  │ └── rnaseq_env.yaml # Environment specification
+  │
+  ├── modules/ # Nextflow modules
+  │ └── rnaseq_modules/ # Custom Nextflow modules
+  │
+  ├── results/ # Analysis outputs
+  │ ├── significant_genenames_for_DAVID_*.txt # Gene lists for enrichment
+  │ ├── FGSEA_C2_results.tsv # FGSEA pathway results
+  │ ├── Reactome_Pathways_2024_table.txt # Reactome enrichment results
+  │ └── *.png # Generated figures
+  │
+  ├── scripts/ # Analysis scripts
+  │ └── Project2Report.Rmd # Main analysis R Markdown file
+  │
+  ├── workflows/ # Nextflow workflows
+  │ ├── main.nf # Main Nextflow pipeline
+  │ └── nextflow.config # Nextflow configuration
+  │
+  ├── reports/ # Final reports
+  │ ├── Project2Report.pdf # Compiled PDF report
+  │ └── Project2Report.html # HTML version
+  │
+  └── README.md
+
+
 
 ## Key Findings
 
