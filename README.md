@@ -15,10 +15,16 @@ This project reproduces the bioinformatic analysis from the publication "The typ
   │ └── geneIDs.txt # Gene ID to symbol mapping
   │
   ├── envs/ # Conda environment files
-  │ └── rnaseq_env.yaml # Environment specification
+  │ └── base_env.yml # Environment specification
   │
   ├── modules/ # Nextflow modules
-  │ └── rnaseq_modules/ # Custom Nextflow modules
+  │ └── align/
+  │ └── concatenate/
+  │ └── fastqc/
+  │ └── index/
+  │ └── multiqc/
+  │ └── parse/
+  │ └── verse/
   │
   ├── results/ # Analysis outputs
   │ ├── significant_genenames_for_DAVID_*.txt # Gene lists for enrichment
@@ -27,15 +33,15 @@ This project reproduces the bioinformatic analysis from the publication "The typ
   │ └── *.png # Generated figures
   │
   ├── scripts/ # Analysis scripts
-  │ └── Project2Report.Rmd # Main analysis R Markdown file
+  │ └── MainAnalysis.Rmd # Main analysis R Markdown file
+  │ └── concatenate_counts.py # Concatenate VERSE .exon.txt count files into a gene-by-sample matrix
+  │ └── parseGTF.py # Parse GTF files for gene ID and name
   │
   ├── workflows/ # Nextflow workflows
   │ ├── main.nf # Main Nextflow pipeline
   │ └── nextflow.config # Nextflow configuration
   │
-  ├── reports/ # Final reports
-  │ ├── Project2Report.pdf # Compiled PDF report
-  │ └── Project2Report.html # HTML version
+  ├── RNAseq_Project_Report.pdf # Compiled PDF report
   │
   └── README.md
 ```
